@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+
+"""Kang = ban from XDA"""
+
+import os, pwd, grp
+import shutil
+
+# clear the console
+os.system('cls' if os.name=='nt' else 'clear')
+
+# ask user for input
+print("What do you want to do?\n")
+print("1) Unpack all Images")
+print("2) Repack ROM\n")
+option = input("Enter option: ")
+if option == "1":
+    metadata = []
+    symlinks = []
+    placeholders = []
+    # find images
+    files1 = (f for f in os.listdir(".") if f.endswith(".img"))
+    for image in files1:
+        # dont try to unpack boot.img
+        if image != "boot.img":
+            name = f"{image}".split(".img")[0]
+            # TODO: figure out how to figure out if image is sparse without file
+            os.system("file " f"{name}" ".img > " f"{name}" "info")
+            with open(f"{name}" "info") as f:
+                if 'sparse' in f.read():
+                    print("Converting " f"{name}" ".img to raw")
+                    shutil.move(f"{name}" ".img", f"{name}" ".img.ext4")
+                    os.system("./tools/simg2img " f"{name}" ".img.ext4 " f"{name}" ".img")
+            print("Mounting raw " f"{name}" ".img")
+            if os.path.exists(f"{name}"):
+                shutil.rmtree(f"{name}")
+            os.mkdir(f"{name}")
+            # TODO: somehow mount on windows
+            os.system("sudo mount -t ext4 -o loop " f"{name}" ".img " f"{name}")
+            # get symlinks & metadata
+            files = []
+            symlink = []
+            dirs = []
+            for root, directories, filenames in os.walk(name):
+                for directory in directories:
+                    dirs.append(root + "/" + directory)
+                    files.append(root + "/" + directory)
+                for filename in filenames:
+                    files.append(root + "/" + filename)
+            for file in files:
+                if os.path.islink(file):
+                    symlink.append(file)
+                    symlinks.append("symlink(\"" + os.readlink(file) + "\", \"/" + file + "\");")
+                stat_info = os.lstat(file)
+                try:
+                    cap = hex(int.from_bytes(os.getxattr(file, "security.capability")[4:8] + os.getxattr(file, "security.capability")[14:18], "little"))
+                except:
+                    cap = "0x0"
+                try:
+                    selabel = os.getxattr(file, b"security.selinux", follow_symlinks=False).decode().strip('\n\0')
+                except:
+                    selabel = "u:object_r:unlabeled:s0"
+                metadata.append("set_metadata(\"/" + file + "\", \"uid\", " + str(stat_info.st_uid) + ", \"gid\", " + str(stat_info.st_gid) + ", \"mode\", " + oct(stat_info.st_mode)[-4:] + ", \"capabilities\", " + cap + ", \"selabel\", \"" + selabel + "\");")
+            print("Copying output to " f"{name}")
+            # TODO: do this without os.system
+            os.system("sudo cp -r " f"{name}" " " f"{name}" "1")
+            os.system("sudo umount " f"{name}")
+            os.rmdir(f"{name}")
+            shutil.move(f"{name}" "1", f"{name}")
+            # memes
+            with open(f"{name}" "info") as g:
+                if 'sparse' in g.read():
+                    os.remove(f"{name}" ".img")
+                    shutil.move(f"{name}" ".img.ext4", f"{name}" ".img")
+            os.remove(f"{name}" "info")
+            for sym in symlink:
+                os.remove(sym)
+            # placeholders
+            l3 = [x for x in dirs if x not in symlink]
+            for directory in l3:
+                if len(os.listdir(directory)) == 0:
+                    os.system("sudo chmod +w " f"{directory}")
+                    os.mknod(directory + "/" + ".PLACEHOLDER")
+                    placeholders.append(directory + "/" + ".PLACEHOLDER")
+            if os.name != "nt":
+                os.system("sudo chown -R " f"{os.getlogin()}" ":" f"{os.getlogin()}" " " f"{name}")
+
+    os.setgid(pwd.getpwnam(os.getlogin())[2])
+    os.setuid(grp.getgrnam(os.getlogin())[2])
+
+    # Check if we should include vendor
+    if os.path.isfile("vendor.img"):
+        shutil.copyfile("tools/treble", "META-INF/com/google/android/updater-script")
+    else:
+        shutil.copyfile("tools/nontreble", "META-INF/com/google/android/updater-script")
+
+    # write meta and symlinks to updater-script
+    symlinks.sort()
+    metadata.sort()
+    placeholders.sort()
+    fin = open("META-INF/com/google/android/updater-script", "rt")
+    data = fin.read()
+    data = data.replace("#SYM", '\n'.join([str(elem) for elem in symlinks]))
+    data = data.replace("#PERM", '\n'.join([str(elem) for elem in metadata]))
+    data = data.replace("#PLACEHOLDER", '\n'.join(['delete("/' + str(elem) + '");' for elem in placeholders]))
+    fin.close()
+    fin = open("META-INF/com/google/android/updater-script", "wt")
+    fin.write(data)
+    fin.close()
+
+elif option == "2":
+    # repack (TODO: do it in python instead of shell)
+    if os.path.isdir("vendor"):
+        os.system("zip -r rom.zip install META-INF vendor system boot.img")
+    else:
+        os.system("zip -r rom.zip install META-INF system boot.img")
